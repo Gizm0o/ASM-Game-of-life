@@ -1,155 +1,157 @@
-section .bss
-    grid resb 100         ; 10x10 grid
-    new_grid resb 100     ; New grid for next generation
+%macro print 2
+	mov eax, sys_write   ; Set syscall number for write
+	mov edi, 1           ; Set stdout file descriptor
+	mov rsi, %1          ; Set address of string/message to print (%1)
+	mov edx, %2          ; Set length of string/message (%2)
+	syscall               ; Invoke syscall to print
+%endmacro
+
+%macro clear_screen 0
+	mov eax, sys_write   ; Set syscall number for write
+	mov edi, 1           ; Set stdout file descriptor
+	mov rsi, clear       ; Set address of "clear" escape sequence
+	mov edx, clear_length; Set length of "clear" sequence
+	syscall               ; Invoke syscall to clear screen
+%endmacro
 
 section .data
-    rows equ 10
-    cols equ 10
-    generations equ 10    ; Number of generations to simulate
+    row_cells       equ 16    ; Number of rows in grid
+    column_cells    equ 64    ; Number of columns in grid
+    array_length    equ row_cells * column_cells ; Total cells in grid
+
+    ; Constants for cell states and control characters
+    live            equ 'O'   ; 
+    dead            equ ' '   ; 
+    new_line        equ 10    ; ASCII code for newline character
+    clear           db 27, "[2J", 27, "[H"  ; ANSI escape sequence to clear screen
+    clear_length    equ $ - clear   ;
+
+    ; Time specifications for nanosleep
+    timespec:
+        tv_sec  dq 0          ; Seconds part of time for nanosleep
+        tv_nsec dq 200000000  ; Nanoseconds part of time for nanosleep
+
+    sys_write       equ 1     ; Syscall number for write
+    sys_nanosleep   equ 35    ; Syscall number for nanosleep
+    sys_time        equ 201   ; Syscall number for time
+
+section .bss
+    cells1          resb array_length   ; Reserve space for cells array 1
+    cells2          resb array_length   ; Reserve space for cells array 2
 
 section .text
-    global _start
+global _start
 
 _start:
-    ; Initialize the grid with some pattern
-    call initialize_grid
+    ; Initialize the grid with random live and dead cells
+    call generate_initial_cells
 
-    ; Main loop for generations
-    mov rcx, generations
-main_loop:
-    call compute_next_generation
-    call copy_new_to_old
-    dec rcx
-    jnz main_loop
+    ; Main loop to simulate generations of Game of Life
+    .generate_cells:
+        ; Clear the screen before printing each generation
+        print clear, clear_length
 
-    ; Exit the program
-    mov rax, 60          ; sys_exit
-    xor rdi, rdi         ; exit code 0
-    syscall
+        ; Print the current state of cells1
+        mov rsi, cells1      ; Set source pointer to cells1
+        mov edx, array_length; Set length to print
+        print rsi, edx       ; Print cells1
 
-initialize_grid:
-    ; Example: Initialize with a simple pattern
-    mov byte [grid + 11], 1
-    mov byte [grid + 12], 1
-    mov byte [grid + 21], 1
-    ret
+        ; Pause briefly between generations
+        mov eax, sys_nanosleep   ; Set syscall number for nanosleep
+        mov edi, timespec        ; Set timespec struct address
+        xor esi, esi             ; Set remaining time (not used)
+        syscall                   ; Invoke syscall for nanosleep
 
-compute_next_generation:
-    xor rdi, rdi         ; i = 0
-    xor rsi, rsi         ; j = 0
-next_cell:
-    mov rbx, rdi         ; Copy i
-    imul rbx, rbx, cols  ; i * cols
-    add rbx, rsi         ; i * cols + j
-    mov al, [grid + rbx]
-    call count_neighbors
-    mov bl, al           ; Save the count of neighbors
+        ; Clear the screen before updating for the next generation
+        print clear, clear_length
 
-    ; Apply rules of Game of Life
-    cmp byte [grid + rbx], 1
-    jne .dead_cell
+        ; Calculate the next generation based on cells1
+        mov rsi, cells1   ; Set source pointer to cells1
+        mov rdi, cells2   ; Set destination pointer to cells2
+        call update_cells ; Call subroutine to update cells
 
-    ; Alive cell
-    cmp bl, 2
-    je .stay_alive
-    cmp bl, 3
-    je .stay_alive
-    jmp .die
+        ; Swap cell arrays for the next iteration
+        xchg rsi, rdi     ; Exchange source and destination pointers
 
-.stay_alive:
-    mov byte [new_grid + rbx], 1
-    jmp .next_iteration
+        ; Repeat indefinitely
+        jmp .generate_cells
 
-.die:
-    mov byte [new_grid + rbx], 0
-    jmp .next_iteration
+; Procedure to generate the initial state of cells1
+generate_initial_cells:
+    xor rdx, rdx   ; Clear rdx (counter for cells)
+    .init_cell:
+        ; For simplicity, using a pseudo-random method here to initialise cells1
+        mov rax, sys_time   ; Get current time
+        syscall              ; Invoke syscall for time
 
-.dead_cell:
-    cmp bl, 3
-    je .become_alive
-    jmp .stay_dead
+        ; Pseudo-randomly decide if cell is live or dead
+        test rax, 1         ; Test lowest bit of returned time
+        jz .cell_dead       ; If zero, cell is dead
+        mov byte [cells1 + rdx], live   ; Set cell as live
+        jmp .next_cell      ; Jump to next cell
 
-.become_alive:
-    mov byte [new_grid + rbx], 1
-    jmp .next_iteration
+    .cell_dead:
+        mov byte [cells1 + rdx], dead   ; Set cell as dead
 
-.stay_dead:
-    mov byte [new_grid + rbx], 0
+    .next_cell:
+        inc rdx              ; Increment cell counter
+        cmp rdx, array_length  ; Compare with total cells
+        jl .init_cell        ; Loop until all cells initialized
+    ret                     ; Return from subroutine
 
-.next_iteration:
-    inc rsi             ; j++
-    cmp rsi, cols
-    jl next_cell_row
+; Procedure to update cells for the next generation
+update_cells:
+    xor rdx, rdx   ; Clear rdx (counter for cells)
+    .update_cell:
+        ; Calculate neighbors and apply Game of Life rules
+        movzx rcx, byte [rsi + rdx]   ; Current cell state
 
-    inc rdi             ; i++
-    xor rsi, rsi        ; j = 0
-    cmp rdi, rows
-    jl next_cell
-    ret
+        ; Calculate live neighbors (including the current cell itself)
+        movzx r8, byte [rsi + rdx - column_cells - 1] ; Top left
+        add rcx, r8
 
-next_cell_row:
-    jmp next_cell
+        movzx r8, byte [rsi + rdx - column_cells]     ; Top middle
+        add rcx, r8
 
-count_neighbors:
-    ; Count the number of live neighbors around (i, j)
-    xor r8, r8          ; neighbor count = 0
-    mov r9, rdi         ; Copy i to r9
-    mov r10, rsi        ; Copy j to r10
-    sub r9, 1           ; Start with (i-1)
-    sub r10, 1          ; Start with (j-1)
-    mov r11, 3          ; 3 rows to check
+        movzx r8, byte [rsi + rdx - column_cells + 1] ; Top right
+        add rcx, r8
 
-count_row:
-    push r10            ; Save j position
-    mov r12, 3          ; 3 columns to check
-count_col:
-    ; Check boundary conditions
-    cmp r9, -1
-    jl skip_cell
-    cmp r9, rows
-    jge skip_cell
-    cmp r10, -1
-    jl skip_cell
-    cmp r10, cols
-    jge skip_cell
+        movzx r8, byte [rsi + rdx - 1]                ; Left
+        add rcx, r8
 
-    ; Check if it's the current cell
-    cmp r9, rdi
-    jne check_cell
-    cmp r10, rsi
-    je skip_cell
+        movzx r8, byte [rsi + rdx + 1]                ; Right
+        add rcx, r8
 
-check_cell:
-    ; Calculate the cell index and check if it's alive
-    mov rbx, r9
-    imul rbx, rbx, cols
-    add rbx, r10
-    cmp byte [grid + rbx], 1
-    jne skip_cell
-    inc r8             ; Increment neighbor count
+        movzx r8, byte [rsi + rdx + column_cells - 1] ; Bottom left
+        add rcx, r8
 
-skip_cell:
-    inc r10            ; Move to next column
-    dec r12            ; Decrement column counter
-    jnz count_col      ; If more columns to check, repeat
+        movzx r8, byte [rsi + rdx + column_cells]     ; Bottom middle
+        add rcx, r8
 
-    pop r10            ; Restore j position
-    inc r9             ; Move to next row
-    dec r11            ; Decrement row counter
-    jnz count_row      ; If more rows to check, repeat
+        movzx r8, byte [rsi + rdx + column_cells + 1] ; Bottom right
+        add rcx, r8
 
-    mov al, r8b        ; Return neighbor count in al
-    ret
+        ; Apply rules of Game of Life
+        cmp byte [rsi + rdx], live   ; Check if current cell is live
+        je .live_cell               ; Jump if live
 
-copy_new_to_old:
-    mov rdi, grid
-    mov rsi, new_grid
-    mov rcx, 100        ; 10x10 grid
+        ; Current cell is dead
+        cmp rcx, 3                  ; Check if exactly 3 live neighbors
+        jne .cell_dead              ; Jump if not, cell remains dead
+        mov byte [rdi + rdx], live  ; Set cell as live in next generation
+        jmp .next_update            ; Jump to next cell update
 
-copy_loop:
-    mov al, [rsi]
-    mov [rdi], al
-    inc rdi
-    inc rsi
-    loop copy_loop
-    ret
+    .live_cell:
+        ; Current cell is live
+        cmp rcx, 2                  ; Check if 2 or 3 live neighbors
+        jne .cell_dead              ; Jump if not, cell dies
+        mov byte [rdi + rdx], live  ; Set cell as live in next generation
+
+    .cell_dead:
+        mov byte [rdi + rdx], dead  ; Set cell as dead in next generation
+
+    .next_update:
+        inc rdx              ; Increment cell counter
+        cmp rdx, array_length  ; Compare with total cells
+        jl .update_cell      ; Loop until all cells updated
+    ret                     ; Return from subroutine
